@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "ContextKeeper",
+  "version": "1.0.0",
+  "description": "Prevents context rotting in LLM interfaces by tracking token usage and preparing handoffs.",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "host_permissions": [
+    "*://chatgpt.com/*",
+    "*://claude.ai/*",
+    "*://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*"
+      ],
+      "js": ["src/content/index.tsx"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ContextKeeper"
+  }
+}
