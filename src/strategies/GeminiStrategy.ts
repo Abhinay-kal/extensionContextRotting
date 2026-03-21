@@ -141,6 +141,15 @@ export class GeminiStrategy implements LLMDOMStrategy {
     }
   }
 
+  public async injectReference(summary: string): Promise<boolean> {
+    const referenceTemplate = `I am providing a technical reference from a previous session to initialize our state:
+
+${summary}
+
+Acknowledge this context and wait for my first instruction.`;
+    return this.injectPrompt(referenceTemplate);
+  }
+
   private dispatchInputEvents(element: HTMLElement): void {
     try {
       element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));

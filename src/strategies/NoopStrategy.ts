@@ -10,6 +10,11 @@ export class NoopStrategy implements LLMDOMStrategy {
     return false;
   }
 
+  public async injectReference(): Promise<boolean> {
+    console.warn('[ContextKeeper][NoopStrategy] injectReference is not implemented for this host yet.');
+    return false;
+  }
+
   public getUIAnchor(): HTMLElement | null {
     return document.body;
   }

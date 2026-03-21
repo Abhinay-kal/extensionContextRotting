@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LLMDOMStrategy } from '../interfaces/LLMDOMStrategy';
+import type { Handoff } from '../types/messages';
 import { useContextStore } from '../state/useContextStore';
 import { useAuth } from '../auth/AuthProvider';
+import { safeSendMessage } from '../utils/messaging';
+import { extractChatTitle } from '../utils/titleExtractor';
 
 const HANDOFF_PROMPT = `Act as a strict state-compression algorithm. We are migrating to a new session to prevent context degradation. Synthesize our entire conversation into a highly dense, technical 'State Document'.
 
@@ -51,6 +54,8 @@ interface DragState {
   offsetY: number;
 }
 
+type ActiveTab = 'current' | 'library';
+
 const STORAGE_KEY = 'floatingUIPreferences';
 const VIEWPORT_MARGIN = 12;
 const KEYBOARD_MOVE_STEP = 16;
@@ -97,6 +102,11 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const [isReady, setIsReady] = useState(false);
   const [isInjecting, setIsInjecting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('current');
+  const [library, setLibrary] = useState<Handoff[]>([]);
+  const [isLibraryLoading, setIsLibraryLoading] = useState(false);
+  const [saveToLibrary, setSaveToLibrary] = useState(false);
+
   const positionRef = useRef<UIPanelPosition>(position);
   const collapsedRef = useRef<boolean>(isCollapsed);
 
@@ -134,6 +144,22 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
     }
     return clampPosition(next, rect.width, rect.height);
   };
+
+  const fetchLibrary = useCallback(async (): Promise<void> => {
+    setIsLibraryLoading(true);
+    try {
+      const result = await safeSendMessage<{ library: Handoff[] }>(
+        { type: 'CK_GET_LIBRARY' },
+        { retries: 2, fallback: { library: [] } }
+      );
+      setLibrary(result.library ?? []);
+    } catch (error) {
+      console.warn('[ContextKeeper][FloatingUI] Failed to fetch library.', error);
+      setLibrary([]);
+    } finally {
+      setIsLibraryLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -216,6 +242,13 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   useEffect(() => {
     collapsedRef.current = isCollapsed;
   }, [isCollapsed]);
+
+  // Fetch library when tab is switched to Library
+  useEffect(() => {
+    if (activeTab === 'library' && isReady) {
+      void fetchLibrary();
+    }
+  }, [activeTab, isReady, fetchLibrary]);
 
   const onPointerMove = useCallback((event: PointerEvent): void => {
     const drag = dragStateRef.current;
@@ -343,14 +376,74 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
     };
   }, [onPointerMove, onPointerUp]);
 
+  const getCurrentHost = (): string => {
+    const url = new URL(window.location.href);
+    if (url.hostname.includes('chatgpt.com')) return 'ChatGPT';
+    if (url.hostname.includes('claude.ai')) return 'Claude';
+    if (url.hostname.includes('gemini.google.com')) return 'Gemini';
+    return 'Unknown';
+  };
+
   const onPrepareHandoff = async () => {
     setIsInjecting(true);
     setStatus(null);
     try {
+      if (saveToLibrary) {
+        const title = extractChatTitle();
+        const host = getCurrentHost();
+        const summary = HANDOFF_PROMPT;
+
+        const saveResult = await safeSendMessage<{ ok: boolean; reason?: string }>(
+          {
+            type: 'CK_SAVE_HANDOFF',
+            payload: { title, summary, host }
+          },
+          { retries: 2, fallback: { ok: false } }
+        );
+
+        if (!saveResult.ok) {
+          setStatus(`Library save failed: ${saveResult.reason || 'Unknown error'}`);
+          return;
+        }
+
+        setStatus('Handoff saved to library.');
+      }
+
       const success = await strategy.injectPrompt(HANDOFF_PROMPT);
       setStatus(success ? 'Handoff prompt prepared in chat input.' : 'Could not inject handoff prompt.');
     } finally {
       setIsInjecting(false);
+    }
+  };
+
+  const onInjectReference = async (handoff: Handoff): Promise<void> => {
+    setIsInjecting(true);
+    setStatus(null);
+    try {
+      const success = await strategy.injectReference(handoff.summary);
+      setStatus(success ? `Injected: "${handoff.title}"` : 'Could not inject reference.');
+    } catch (error) {
+      setStatus(`Injection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsInjecting(false);
+    }
+  };
+
+  const onDeleteHandoff = async (id: string): Promise<void> => {
+    try {
+      const result = await safeSendMessage<{ ok: boolean }>(
+        { type: 'CK_DELETE_HANDOFF', payload: { id } },
+        { retries: 2, fallback: { ok: false } }
+      );
+
+      if (result.ok) {
+        setLibrary((prev) => prev.filter((h) => h.id !== id));
+        setStatus('Handoff deleted.');
+      } else {
+        setStatus('Failed to delete handoff.');
+      }
+    } catch (error) {
+      setStatus(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -409,7 +502,7 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
           </div>
         </button>
       ) : (
-        <div className="w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl transition-all duration-300 ease-in-out">
+        <div className="w-96 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl transition-all duration-300 ease-in-out">
           <div
             onPointerDown={onHeaderPointerDown}
             onKeyDown={onHeaderKeyDown}
@@ -430,69 +523,173 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
             </button>
           </div>
 
-          <div className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-900">Session Health</h2>
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-700">
-              {loading ? 'Checking...' : tier}
-            </span>
+          {/* Tab Navigation */}
+          <div className="flex border-b border-slate-100 bg-slate-50">
+            <button
+              type="button"
+              onClick={() => setActiveTab('current')}
+              className={`flex-1 px-4 py-2 text-xs font-semibold transition ${
+                activeTab === 'current'
+                  ? 'border-b-2 border-slate-900 bg-white text-slate-900'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Current State
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('library')}
+              className={`flex-1 px-4 py-2 text-xs font-semibold transition ${
+                activeTab === 'library'
+                  ? 'border-b-2 border-slate-900 bg-white text-slate-900'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Library
+            </button>
           </div>
 
-          <div className="mb-3 flex items-center gap-4">
-            <svg width={radius * 2} height={radius * 2} viewBox={`0 0 ${radius * 2} ${radius * 2}`}>
-              <circle
-                cx={radius}
-                cy={radius}
-                r={normalizedRadius}
-                fill="transparent"
-                stroke="#E5E7EB"
-                strokeWidth={stroke}
-              />
-              <circle
-                cx={radius}
-                cy={radius}
-                r={normalizedRadius}
-                fill="transparent"
-                stroke={progressColor}
-                strokeWidth={stroke}
-                strokeLinecap="round"
-                strokeDasharray={`${circumference} ${circumference}`}
-                style={{
-                  strokeDashoffset,
-                  transform: 'rotate(-90deg)',
-                  transformOrigin: '50% 50%',
-                  transition: 'stroke-dashoffset 250ms ease-in-out, stroke 250ms ease-in-out'
-                }}
-              />
-              <text
-                x="50%"
-                y="50%"
-                dominantBaseline="middle"
-                textAnchor="middle"
-                className="fill-slate-800 text-xs font-semibold"
+          {/* Current State Tab */}
+          {activeTab === 'current' && (
+            <div className="p-4 max-h-96 overflow-y-auto">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-slate-900">Session Health</h2>
+                <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium uppercase tracking-wide text-slate-700">
+                  {loading ? 'Checking...' : tier}
+                </span>
+              </div>
+
+              <div className="mb-4 flex items-center gap-4">
+                <svg width={radius * 2} height={radius * 2} viewBox={`0 0 ${radius * 2} ${radius * 2}`}>
+                  <circle
+                    cx={radius}
+                    cy={radius}
+                    r={normalizedRadius}
+                    fill="transparent"
+                    stroke="#E5E7EB"
+                    strokeWidth={stroke}
+                  />
+                  <circle
+                    cx={radius}
+                    cy={radius}
+                    r={normalizedRadius}
+                    fill="transparent"
+                    stroke={progressColor}
+                    strokeWidth={stroke}
+                    strokeLinecap="round"
+                    strokeDasharray={`${circumference} ${circumference}`}
+                    style={{
+                      strokeDashoffset,
+                      transform: 'rotate(-90deg)',
+                      transformOrigin: '50% 50%',
+                      transition: 'stroke-dashoffset 250ms ease-in-out, stroke 250ms ease-in-out'
+                    }}
+                  />
+                  <text
+                    x="50%"
+                    y="50%"
+                    dominantBaseline="middle"
+                    textAnchor="middle"
+                    className="fill-slate-800 text-xs font-semibold"
+                  >
+                    {Math.round(percentage)}%
+                  </text>
+                </svg>
+
+                <div>
+                  <p className="text-xs text-slate-500">Estimated tokens</p>
+                  <p className="text-xl font-bold text-slate-900">{tokenCount.toLocaleString()}</p>
+                  <p className="text-xs text-slate-600">Threshold: {threshold.toLocaleString()}</p>
+                </div>
+              </div>
+
+              {/* Save to Library Checkbox */}
+              <div className="mb-3 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="saveToLibrary"
+                  checked={saveToLibrary}
+                  onChange={(e) => setSaveToLibrary(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-slate-900"
+                />
+                <label htmlFor="saveToLibrary" className="text-xs text-slate-600">
+                  Save to Library & Prepare
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={onPrepareHandoff}
+                disabled={isInjecting}
+                className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {Math.round(percentage)}%
-              </text>
-            </svg>
+                {isInjecting ? 'Preparing...' : 'Prepare Handoff'}
+              </button>
 
-            <div>
-              <p className="text-xs text-slate-500">Estimated tokens</p>
-              <p className="text-xl font-bold text-slate-900">{tokenCount.toLocaleString()}</p>
-              <p className="text-xs text-slate-600">Threshold: {threshold.toLocaleString()}</p>
+              {status && <p className="mt-2 text-xs text-slate-600">{status}</p>}
             </div>
-          </div>
+          )}
 
-          <button
-            type="button"
-            onClick={onPrepareHandoff}
-            disabled={isInjecting}
-            className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isInjecting ? 'Preparing...' : 'Prepare Handoff'}
-          </button>
+          {/* Library Tab */}
+          {activeTab === 'library' && (
+            <div className="p-4 max-h-96 overflow-y-auto">
+              {isLibraryLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <p className="text-xs text-slate-600">Loading library...</p>
+                </div>
+              ) : library.length === 0 ? (
+                <div className="flex items-center justify-center py-8">
+                  <p className="text-center text-xs text-slate-500">
+                    No saved contexts yet. Prepare a handoff and save it to get started.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {[...library].sort((a, b) => b.timestamp - a.timestamp).map((handoff) => (
+                    <div
+                      key={handoff.id}
+                      className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 transition hover:bg-slate-100"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate text-xs font-semibold text-slate-900">{handoff.title}</p>
+                        <p className="text-xs text-slate-600">{handoff.host}</p>
+                        <p className="text-xs text-slate-500">
+                          {new Date(handoff.timestamp).toLocaleDateString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onInjectReference(handoff)}
+                          disabled={isInjecting}
+                          className="rounded px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-60"
+                          title="Inject this reference"
+                        >
+                          Inject
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteHandoff(handoff.id)}
+                          disabled={isInjecting}
+                          className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-60"
+                          title="Delete this reference"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-          {status ? <p className="mt-2 text-xs text-slate-600">{status}</p> : null}
-        </div>
+              {status && <p className="mt-2 text-xs text-slate-600">{status}</p>}
+            </div>
+          )}
         </div>
       )}
     </div>

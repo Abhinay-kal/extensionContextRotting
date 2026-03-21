@@ -133,6 +133,15 @@ export class ChatGPTStrategy implements LLMDOMStrategy {
     }
   }
 
+  public async injectReference(summary: string): Promise<boolean> {
+    const referenceTemplate = `I am providing a technical reference from a previous session to initialize our state:
+
+${summary}
+
+Acknowledge this context and wait for my first instruction.`;
+    return this.injectPrompt(referenceTemplate);
+  }
+
   public getUIAnchor(): HTMLElement | null {
     const anchor = this.queryFirst<HTMLElement>(UI_ANCHOR_SELECTORS);
     if (!anchor) {
