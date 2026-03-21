@@ -1,8 +1,8 @@
 import type { CKMessage, SubscriptionTier, Handoff } from '../types/messages';
 
 const DEFAULT_THRESHOLD = 8000;
-const MAX_LIBRARY_SIZE = 50;
 const HANDOFF_LIBRARY_KEY = 'handoffLibrary';
+const HANDOFF_QUOTA_LIMIT = 50;
 
 // ============================================================================
 // SYNCHRONOUS MESSAGE LISTENER REGISTRATION (TOP LEVEL)
@@ -73,6 +73,33 @@ async function getSubscriptionTier(): Promise<SubscriptionTier> {
   return stored.subscriptionTier === 'pro' ? 'pro' : 'free';
 }
 
+async function getHandoffLibrary(): Promise<Handoff[]> {
+  const stored = await chrome.storage.local.get([HANDOFF_LIBRARY_KEY]);
+  const library = (stored[HANDOFF_LIBRARY_KEY] as Handoff[] | undefined) ?? [];
+  return Array.isArray(library) ? library : [];
+}
+
+async function saveHandoffWithQuota(handoff: Handoff): Promise<void> {
+  const library = await getHandoffLibrary();
+
+  // Add new handoff
+  library.push(handoff);
+
+  // Enforce quota: if exceeds limit, remove oldest (lowest timestamp)
+  if (library.length > HANDOFF_QUOTA_LIMIT) {
+    library.sort((a, b) => a.timestamp - b.timestamp);
+    library.shift(); // Remove oldest
+  }
+
+  await chrome.storage.local.set({ [HANDOFF_LIBRARY_KEY]: library });
+}
+
+async function deleteHandoffById(id: string): Promise<void> {
+  const library = await getHandoffLibrary();
+  const filtered = library.filter((h) => h.id !== id);
+  await chrome.storage.local.set({ [HANDOFF_LIBRARY_KEY]: filtered });
+}
+
 // ============================================================================
 // MESSAGE HANDLERS
 // ============================================================================
@@ -132,57 +159,19 @@ function handleGetSubscription(sendResponse: (response?: unknown) => void): void
   })();
 }
 
-async function getHandoffLibrary(): Promise<Handoff[]> {
-  const stored = await chrome.storage.local.get([HANDOFF_LIBRARY_KEY]);
-  return (stored[HANDOFF_LIBRARY_KEY] as Handoff[] | undefined) ?? [];
-}
-
-async function saveHandoffToLibrary(handoff: Omit<Handoff, 'id' | 'timestamp'>): Promise<{ id: string; timestamp: number }> {
-  const library = await getHandoffLibrary();
-  const id = `handoff_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const timestamp = Date.now();
-  const newHandoff: Handoff = {
-    ...handoff,
-    id,
-    timestamp
-  };
-
-  library.push(newHandoff);
-
-  // Enforce quota guardrail: max 50 items
-  if (library.length > MAX_LIBRARY_SIZE) {
-    // Sort by timestamp and remove oldest
-    library.sort((a, b) => a.timestamp - b.timestamp);
-    library.shift(); // Remove the oldest
-  }
-
-  await chrome.storage.local.set({ [HANDOFF_LIBRARY_KEY]: library });
-  return { id, timestamp };
-}
-
-async function deleteHandoffFromLibrary(id: string): Promise<void> {
-  const library = await getHandoffLibrary();
-  const filtered = library.filter((h) => h.id !== id);
-  await chrome.storage.local.set({ [HANDOFF_LIBRARY_KEY]: filtered });
-}
-
 function handleSaveHandoff(
   message: Extract<CKMessage, { type: 'CK_SAVE_HANDOFF' }>,
   sendResponse: (response?: unknown) => void
 ): void {
   void (async () => {
     try {
-      const { title, summary, host } = message.payload;
-      await saveHandoffToLibrary({ title, summary, host });
+      await saveHandoffWithQuota(message.payload);
       sendResponse({ ok: true });
     } catch (error) {
-      console.warn('[ContextKeeper][Background] Failed to save handoff.', {
+      console.warn('[ContextKeeper][Background] Error saving handoff.', {
         error: error instanceof Error ? error.message : String(error)
       });
-      sendResponse({
-        ok: false,
-        reason: error instanceof Error ? error.message : 'Unknown error'
-      });
+      sendResponse({ ok: false, reason: 'Failed to save handoff' });
     }
   })();
 }
@@ -190,13 +179,13 @@ function handleSaveHandoff(
 function handleGetLibrary(sendResponse: (response?: unknown) => void): void {
   void (async () => {
     try {
-      const library = await getHandoffLibrary();
-      sendResponse({ library });
+      const handoffs = await getHandoffLibrary();
+      sendResponse({ handoffs });
     } catch (error) {
-      console.warn('[ContextKeeper][Background] Failed to get library.', {
+      console.warn('[ContextKeeper][Background] Error fetching handoff library.', {
         error: error instanceof Error ? error.message : String(error)
       });
-      sendResponse({ library: [] });
+      sendResponse({ handoffs: [] });
     }
   })();
 }
@@ -207,14 +196,13 @@ function handleDeleteHandoff(
 ): void {
   void (async () => {
     try {
-      const { id } = message.payload;
-      await deleteHandoffFromLibrary(id);
+      await deleteHandoffById(message.payload.id);
       sendResponse({ ok: true });
     } catch (error) {
-      console.warn('[ContextKeeper][Background] Failed to delete handoff.', {
+      console.warn('[ContextKeeper][Background] Error deleting handoff.', {
         error: error instanceof Error ? error.message : String(error)
       });
-      sendResponse({ ok: false });
+      sendResponse({ ok: false, reason: 'Failed to delete handoff' });
     }
   })();
 }

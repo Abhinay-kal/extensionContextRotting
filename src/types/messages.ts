@@ -39,37 +39,20 @@ export type CKMessage =
     }
   | {
       type: 'CK_SAVE_HANDOFF';
-      payload: {
-        title: string;
-        summary: string;
-        host: string;
-      };
-    }
-  | {
-      type: 'CK_SAVE_HANDOFF_RESULT';
-      payload: {
-        ok: boolean;
-        reason?: string;
-      };
+      payload: Handoff;
     }
   | {
       type: 'CK_GET_LIBRARY';
     }
   | {
-      type: 'CK_GET_LIBRARY_RESULT';
+      type: 'CK_LIBRARY_RESULT';
       payload: {
-        library: Handoff[];
+        handoffs: Handoff[];
       };
     }
   | {
       type: 'CK_DELETE_HANDOFF';
       payload: {
         id: string;
-      };
-    }
-  | {
-      type: 'CK_DELETE_HANDOFF_RESULT';
-      payload: {
-        ok: boolean;
       };
     };
