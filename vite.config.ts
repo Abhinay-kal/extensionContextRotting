@@ -14,6 +14,8 @@ export default defineConfig({
     cors: true
   },
   build: {
+    outDir: 'dist',
+    emptyOutDir: true,
     sourcemap: true,
     target: 'es2022'
   }
