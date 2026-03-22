@@ -5,6 +5,7 @@ import { useContextStore } from '../state/useContextStore';
 import { useAuth } from '../auth/AuthProvider';
 import { safeSendMessage } from '../utils/messaging';
 import { extractChatTitle } from '../utils/titleExtractor';
+import { ContextBridge } from './ContextBridge';
 
 const HANDOFF_PROMPT = `Act as a strict state-compression algorithm. We are migrating to a new session to prevent context degradation. Synthesize our entire conversation into a highly dense, technical 'State Document'.
 
@@ -54,6 +55,12 @@ interface DragState {
   offsetY: number;
 }
 
+interface BridgeState {
+  active: boolean;
+  reference: Handoff;
+  status: 'injecting' | 'success' | 'error';
+}
+
 const STORAGE_KEY = 'floatingUIPreferences';
 const VIEWPORT_MARGIN = 12;
 const KEYBOARD_MOVE_STEP = 16;
@@ -88,6 +95,40 @@ function getProgressColor(percent: number): string {
   return '#18A957';
 }
 
+function formatRelativeTime(timestamp: number): string {
+  const diffMs = Date.now() - timestamp;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diffMs < minute) {
+    return 'just now';
+  }
+
+  if (diffMs < hour) {
+    const value = Math.floor(diffMs / minute);
+    return `${value} minute${value === 1 ? '' : 's'} ago`;
+  }
+
+  if (diffMs < day) {
+    const value = Math.floor(diffMs / hour);
+    return `${value} hour${value === 1 ? '' : 's'} ago`;
+  }
+
+  const value = Math.floor(diffMs / day);
+  return `${value} day${value === 1 ? '' : 's'} ago`;
+}
+
+function getHostLabel(host: string): string {
+  if (host.includes('chatgpt')) {
+    return 'ChatGPT';
+  }
+  if (host.includes('gemini')) {
+    return 'Gemini';
+  }
+  return host;
+}
+
 export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const tokenCount = useContextStore((state) => state.tokenCount);
   const threshold = useContextStore((state) => state.threshold);
@@ -109,6 +150,8 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const [injectingId, setInjectingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+  const [bridgeState, setBridgeState] = useState<BridgeState | null>(null);
 
   const percentage = useMemo(() => {
     if (threshold <= 0) {
@@ -426,9 +469,42 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const onInjectReference = async (handoff: Handoff) => {
     setInjectingId(handoff.id);
     setStatus(null);
+    setBridgeState({
+      active: true,
+      reference: handoff,
+      status: 'injecting'
+    });
+
     try {
       const success = await strategy.injectReference(handoff.summary);
-      setStatus(success ? `Injected reference: ${handoff.title}` : 'Could not inject reference.');
+      if (success) {
+        setBridgeState({
+          active: true,
+          reference: handoff,
+          status: 'success'
+        });
+        setStatus(`Injected reference: ${handoff.title}`);
+
+        window.setTimeout(() => {
+          setBridgeState(null);
+          setActiveTab('current');
+        }, 1200);
+      } else {
+        setBridgeState({
+          active: true,
+          reference: handoff,
+          status: 'error'
+        });
+        setStatus('Could not inject reference.');
+      }
+    } catch (error) {
+      console.warn('[ContextKeeper][FloatingUI] Reference injection failed.', error);
+      setBridgeState({
+        active: true,
+        reference: handoff,
+        status: 'error'
+      });
+      setStatus('Could not inject reference.');
     } finally {
       setInjectingId(null);
     }
@@ -636,54 +712,94 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
               <>
                 <h2 className="mb-3 text-sm font-semibold text-slate-900">Saved Handoffs</h2>
 
-                <input
-                  type="text"
-                  value={libraryQuery}
-                  onChange={(event) => setLibraryQuery(event.target.value)}
-                  placeholder="Search handoffs..."
-                  className="mb-3 w-full rounded-lg border border-slate-200 px-2 py-2 text-xs text-slate-700 outline-none focus:border-slate-400"
-                />
-
-                {isLoadingLibrary ? (
-                  <p className="text-xs text-slate-500">Loading library...</p>
-                ) : filteredLibraryHandoffs.length === 0 ? (
-                  <p className="text-xs text-slate-400">No saved handoffs yet.</p>
+                {bridgeState?.active ? (
+                  <ContextBridge
+                    sourceName={bridgeState.reference.title}
+                    targetHost={getHostLabel(window.location.hostname)}
+                    status={bridgeState.status}
+                    onRetry={() => {
+                      void onInjectReference(bridgeState.reference);
+                    }}
+                  />
                 ) : (
-                  <div className="max-h-96 space-y-2 overflow-y-auto">
-                    {filteredLibraryHandoffs.map((handoff) => (
-                      <button
-                        key={handoff.id}
-                        type="button"
-                        onClick={() => void onInjectReference(handoff)}
-                        disabled={injectingId !== null || deletingId === handoff.id}
-                        className="flex w-full items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-left transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="truncate text-xs font-medium text-slate-900">{handoff.title}</p>
-                          <p className="text-xs text-slate-500">{handoff.host}</p>
-                          <p className="text-xs text-slate-400">
-                            {new Date(handoff.timestamp).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="flex gap-1">
-                          <span className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white">
-                            {injectingId === handoff.id ? 'Injecting...' : 'Inject'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void onDeleteHandoff(handoff.id);
-                            }}
-                            disabled={deletingId === handoff.id || injectingId === handoff.id}
-                            className="rounded px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {deletingId === handoff.id ? '...' : '🗑'}
-                          </button>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <input
+                      type="text"
+                      value={libraryQuery}
+                      onChange={(event) => setLibraryQuery(event.target.value)}
+                      placeholder="Search handoffs..."
+                      className="mb-3 w-full rounded-lg border border-slate-200 px-2 py-2 text-xs text-slate-700 outline-none focus:border-slate-400"
+                    />
+
+                    {isLoadingLibrary ? (
+                      <p className="text-xs text-slate-500">Loading library...</p>
+                    ) : filteredLibraryHandoffs.length === 0 ? (
+                      <p className="text-xs text-slate-400">No saved handoffs yet.</p>
+                    ) : (
+                      <div className="max-h-96 space-y-2 overflow-y-auto">
+                        {filteredLibraryHandoffs.map((handoff) => {
+                          const isExpanded = expandedItemId === handoff.id;
+                          return (
+                            <div
+                              key={handoff.id}
+                              className="rounded-lg border border-slate-200 bg-slate-50 p-2"
+                            >
+                              <div className="flex items-start gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setExpandedItemId((prev) => (prev === handoff.id ? null : handoff.id));
+                                  }}
+                                  className="flex-1 min-w-0 text-left"
+                                >
+                                  <p className="truncate text-xs font-semibold text-slate-900">{handoff.title}</p>
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                                      {getHostLabel(handoff.host)}
+                                    </span>
+                                    <span className="text-[11px] text-slate-500">
+                                      {formatRelativeTime(handoff.timestamp)}
+                                    </span>
+                                  </div>
+                                </button>
+
+                                <div className="flex shrink-0 gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void onInjectReference(handoff);
+                                    }}
+                                    disabled={injectingId === handoff.id || deletingId === handoff.id}
+                                    className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    {injectingId === handoff.id ? 'Injecting...' : 'Inject'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void onDeleteHandoff(handoff.id);
+                                    }}
+                                    disabled={deletingId === handoff.id || injectingId === handoff.id}
+                                    className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    {deletingId === handoff.id ? '...' : 'Del'}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {isExpanded ? (
+                                <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-white p-2 text-[11px] leading-relaxed text-slate-700">
+                                  {handoff.summary.length > 600
+                                    ? `${handoff.summary.slice(0, 600)}...`
+                                    : handoff.summary}
+                                </pre>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {status ? <p className="mt-2 text-xs text-slate-600">{status}</p> : null}
