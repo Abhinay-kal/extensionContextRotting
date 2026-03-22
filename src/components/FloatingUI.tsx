@@ -108,6 +108,7 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
   const [injectingId, setInjectingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [libraryQuery, setLibraryQuery] = useState('');
 
   const percentage = useMemo(() => {
     if (threshold <= 0) {
@@ -115,6 +116,20 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
     }
     return Math.min(100, (tokenCount / threshold) * 100);
   }, [tokenCount, threshold]);
+
+  const filteredLibraryHandoffs = useMemo(() => {
+    const query = libraryQuery.trim().toLowerCase();
+    if (!query) {
+      return libraryHandoffs;
+    }
+
+    return libraryHandoffs.filter((handoff) => {
+      const title = handoff.title.toLowerCase();
+      const host = handoff.host.toLowerCase();
+      const summary = handoff.summary.toLowerCase();
+      return title.includes(query) || host.includes(query) || summary.includes(query);
+    });
+  }, [libraryHandoffs, libraryQuery]);
 
   const radius = 44;
   const stroke = 8;
@@ -621,14 +636,28 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
               <>
                 <h2 className="mb-3 text-sm font-semibold text-slate-900">Saved Handoffs</h2>
 
+                <input
+                  type="text"
+                  value={libraryQuery}
+                  onChange={(event) => setLibraryQuery(event.target.value)}
+                  placeholder="Search handoffs..."
+                  className="mb-3 w-full rounded-lg border border-slate-200 px-2 py-2 text-xs text-slate-700 outline-none focus:border-slate-400"
+                />
+
                 {isLoadingLibrary ? (
                   <p className="text-xs text-slate-500">Loading library...</p>
-                ) : libraryHandoffs.length === 0 ? (
+                ) : filteredLibraryHandoffs.length === 0 ? (
                   <p className="text-xs text-slate-400">No saved handoffs yet.</p>
                 ) : (
                   <div className="max-h-96 space-y-2 overflow-y-auto">
-                    {libraryHandoffs.map((handoff) => (
-                      <div key={handoff.id} className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    {filteredLibraryHandoffs.map((handoff) => (
+                      <button
+                        key={handoff.id}
+                        type="button"
+                        onClick={() => void onInjectReference(handoff)}
+                        disabled={injectingId !== null || deletingId === handoff.id}
+                        className="flex w-full items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-left transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
                         <div className="flex-1 min-w-0">
                           <p className="truncate text-xs font-medium text-slate-900">{handoff.title}</p>
                           <p className="text-xs text-slate-500">{handoff.host}</p>
@@ -637,24 +666,22 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
                           </p>
                         </div>
                         <div className="flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() => onInjectReference(handoff)}
-                            disabled={injectingId === handoff.id || deletingId === handoff.id}
-                            className="rounded px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
+                          <span className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white">
                             {injectingId === handoff.id ? 'Injecting...' : 'Inject'}
-                          </button>
+                          </span>
                           <button
                             type="button"
-                            onClick={() => onDeleteHandoff(handoff.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void onDeleteHandoff(handoff.id);
+                            }}
                             disabled={deletingId === handoff.id || injectingId === handoff.id}
                             className="rounded px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
                           >
                             {deletingId === handoff.id ? '...' : '🗑'}
                           </button>
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
