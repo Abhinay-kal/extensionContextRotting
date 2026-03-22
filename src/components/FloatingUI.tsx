@@ -152,6 +152,7 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
   const [libraryQuery, setLibraryQuery] = useState('');
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
   const [bridgeState, setBridgeState] = useState<BridgeState | null>(null);
+  const [migrationState, setMigrationState] = useState<'idle' | 'awaiting_extraction' | 'extracting'>('idle');
 
   const percentage = useMemo(() => {
     if (threshold <= 0) {
@@ -461,8 +462,50 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
           setStatus('Handoff prepared but could not save to library.');
         }
       }
+
+      if (success) {
+        setMigrationState('awaiting_extraction');
+      } else {
+        setMigrationState('idle');
+      }
     } finally {
       setIsInjecting(false);
+    }
+  };
+
+  const onCancelMigration = (): void => {
+    setMigrationState('idle');
+    setStatus(null);
+  };
+
+  const onExtractAndAutoMigrate = async (): Promise<void> => {
+    setMigrationState('extracting');
+    setStatus(null);
+
+    try {
+      const text = await strategy.extractLastMessage();
+      if (!text) {
+        setStatus('Could not extract the latest model response.');
+        setMigrationState('awaiting_extraction');
+        return;
+      }
+
+      await chrome.storage.local.set({ pendingHandoffCache: text });
+
+      const clicked = await strategy.clickNewChat();
+      if (!clicked) {
+        await chrome.storage.local.remove('pendingHandoffCache');
+        setStatus('Could not open a new chat automatically.');
+        setMigrationState('awaiting_extraction');
+        return;
+      }
+
+      setStatus('New chat opened. Context will auto-paste when input is ready.');
+      setMigrationState('idle');
+    } catch (error) {
+      console.warn('[ContextKeeper][FloatingUI] Auto-migrate failed.', error);
+      setStatus('Auto-migrate failed. Please try again.');
+      setMigrationState('awaiting_extraction');
     }
   };
 
@@ -697,14 +740,44 @@ export function FloatingUI({ strategy }: FloatingUIProps): JSX.Element {
                   </label>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={onPrepareHandoff}
-                  disabled={isInjecting}
-                  className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isInjecting ? 'Preparing...' : 'Prepare Handoff'}
-                </button>
+                {migrationState === 'idle' ? (
+                  <button
+                    type="button"
+                    onClick={onPrepareHandoff}
+                    disabled={isInjecting}
+                    className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isInjecting ? 'Preparing...' : 'Prepare Handoff'}
+                  </button>
+                ) : null}
+
+                {migrationState === 'awaiting_extraction' ? (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onExtractAndAutoMigrate();
+                      }}
+                      className="w-full rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                    >
+                      Extract & Auto-Migrate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onCancelMigration}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : null}
+
+                {migrationState === 'extracting' ? (
+                  <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-medium text-slate-700">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
+                    Extracting latest response...
+                  </div>
+                ) : null}
 
                 {status ? <p className="mt-2 text-xs text-slate-600">{status}</p> : null}
               </>

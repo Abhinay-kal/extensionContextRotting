@@ -17,6 +17,9 @@ const Tp = [
   'button[data-test-id="send-button"]'
 ];
 
+const LAST_MODEL_MESSAGE_SELECTORS = ['message-content', '.model-response-text'];
+const NEW_CHAT_SELECTORS = ['a[href="/app"]', 'button[aria-label*="New chat"]'];
+
 const UI_ANCHOR_SELECTORS = ['main', '[role="main"]', 'body'];
 const zp = [
   'message-list',
@@ -60,7 +63,7 @@ export class GeminiStrategy implements LLMDOMStrategy {
     return [];
   }
 
-  private async waitForElement<T extends HTMLElement>(
+  public async waitForElement<T extends HTMLElement>(
     selectors: string[],
     options: { timeoutMs?: number; intervalMs?: number } = {}
   ): Promise<T | null> {
@@ -144,6 +147,43 @@ export class GeminiStrategy implements LLMDOMStrategy {
   public async injectReference(summary: string): Promise<boolean> {
     const referencePrompt = `I am providing a technical reference from a previous session to initialize our state:\n\n${summary}\n\nAcknowledge this context and wait for my first instruction.`;
     return this.injectPrompt(referencePrompt);
+  }
+
+  public async extractLastMessage(): Promise<string | null> {
+    for (const selector of LAST_MODEL_MESSAGE_SELECTORS) {
+      try {
+        const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
+        const lastNode = nodes[nodes.length - 1];
+        const text = lastNode?.innerText?.trim() ?? '';
+        if (text) {
+          return text;
+        }
+      } catch (error) {
+        console.warn('[ContextKeeper][GeminiStrategy] Failed to read model message selector.', {
+          selector,
+          error
+        });
+      }
+    }
+
+    console.warn('[ContextKeeper][GeminiStrategy] Could not extract last model message.');
+    return null;
+  }
+
+  public async clickNewChat(): Promise<boolean> {
+    const target = this.queryFirst<HTMLElement>(NEW_CHAT_SELECTORS);
+    if (!target) {
+      console.warn('[ContextKeeper][GeminiStrategy] New chat button/link not found.');
+      return false;
+    }
+
+    try {
+      target.click();
+      return true;
+    } catch (error) {
+      console.warn('[ContextKeeper][GeminiStrategy] Failed to click new chat.', error);
+      return false;
+    }
   }
 
   private dispatchInputEvents(element: HTMLElement): void {

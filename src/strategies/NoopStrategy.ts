@@ -15,6 +15,23 @@ export class NoopStrategy implements LLMDOMStrategy {
     return false;
   }
 
+  public async extractLastMessage(): Promise<string | null> {
+    console.warn('[ContextKeeper][NoopStrategy] extractLastMessage is not implemented for this host yet.');
+    return null;
+  }
+
+  public async clickNewChat(): Promise<boolean> {
+    console.warn('[ContextKeeper][NoopStrategy] clickNewChat is not implemented for this host yet.');
+    return false;
+  }
+
+  public async waitForElement<T extends HTMLElement>(
+    _selectors: string[],
+    _options?: { timeoutMs?: number; intervalMs?: number }
+  ): Promise<T | null> {
+    return null;
+  }
+
   public getUIAnchor(): HTMLElement | null {
     return document.body;
   }
